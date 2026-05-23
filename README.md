@@ -137,6 +137,7 @@ The major objectives of the project are:
 
 ### Videos
 
+<<<<<<< HEAD
 <video controls width="100%">
   <source src="/assests/videos/smartsensecnc-presentation.mp4" type="video/mp4">
 </video>
@@ -144,7 +145,15 @@ The major objectives of the project are:
 <video controls width="100%">
   <source src="/assests/videos/smartsensecnc-demo.mp4" type="video/mp4">
 </video>
+=======
+#### Demonstration Video
 
+[![Watch Demo](assests/images/hardware-setup.jpeg)](assests/videos/smartsensecnc-demo.mp4)
+>>>>>>> 8b3bcda45c576c98ab89bb1af269219d9ec05894
+
+#### Presentation Video
+
+[![Watch Presentation](assests/images/hardware-setup.jpeg)](assests/videos/smartsensecnc-presentation.mp4)
 ---
 
 ## Features (Detailed)
