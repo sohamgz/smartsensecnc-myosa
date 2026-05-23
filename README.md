@@ -153,7 +153,7 @@ The major objectives of the project are:
 #### Presentation Video
 
 [![Watch Presentation](assests/images/hardware-setup.jpeg)](assests/videos/smartsensecnc-presentation.mp4)
----
+
 
 ## Features (Detailed)
 
