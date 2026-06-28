@@ -1,137 +1,145 @@
 import sys
-import sqlite3
+import os
 import warnings
 import datetime
 import numpy as np
 import joblib
-from flask import Flask, request, jsonify, render_template
+from flask import Flask, request, jsonify, render_template, send_from_directory
+from flask_cors import CORS
+from supabase import create_client, Client
 
-# Suppress scikit-learn version mismatch alerts
 warnings.filterwarnings("ignore", category=UserWarning, module="sklearn")
 
-app = Flask(__name__)
+app = Flask(__name__, template_folder="../dashboard")
+CORS(app)
 
-# ── Load Model Bundle ─────────────────────────────────────────────────────────
+# ── Supabase ──────────────────────────────────────────────────────────────────
+SUPABASE_URL = os.environ.get("SUPABASE_URL")
+SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
+supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+
+# ── Load Model ────────────────────────────────────────────────────────────────
 try:
-    bundle = joblib.load("model.pkl")
+    bundle = joblib.load("ml-model/model.pkl")
     model  = bundle["model"]
     le     = bundle["encoder"]
 except Exception as e:
-    print("Warning loading model.pkl: Running app in fallback mode.", file=sys.stderr, flush=True)
+    print(f"Warning loading model.pkl: {e}. Running in fallback mode.", file=sys.stderr, flush=True)
     model, le = None, None
 
-DB = "smartsensecnc.db"
+# ── State label mapping (ESP32 sends OFF/IDLE/WORKING) ───────────────────────
+STATE_MAP = {
+    "OFF":     "MACHINE OFF",
+    "IDLE":    "MACHINE ON (Idle)",
+    "WORKING": "MACHINE ON + WORKING"
+}
 
-# ── Database Initialization ───────────────────────────────────────────────────
-def init_db():
-    conn = sqlite3.connect(DB)
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS sensor_log (
-            id           INTEGER PRIMARY KEY AUTOINCREMENT,
-            machine_id   TEXT,
-            vibration    REAL,
-            current      REAL,
-            state_model  TEXT,
-            state_esp32  TEXT,
-            timestamp    TEXT
-        )
-    """)
-    conn.commit()
-    conn.close()
-
-# ── Web UI Route ──────────────────────────────────────────────────────────────
+# ── Web UI ────────────────────────────────────────────────────────────────────
 @app.route("/")
 def index():
     return render_template("dashboard.html")
 
-# ── API: History (For Live Charts) ────────────────────────────────────────────
-@app.route("/api/history")
-def history():
-    machine_id = request.args.get("machine_id", "CNC-01")
-    limit = int(request.args.get("limit", 60))
-    
-    conn = sqlite3.connect(DB)
-    rows = conn.execute("""
-        SELECT vibration, current, state_model, timestamp 
-        FROM sensor_log WHERE machine_id=? 
-        ORDER BY id DESC LIMIT ?
-    """, (machine_id, limit)).fetchall()
-    conn.close()
-    
-    rows.reverse()
-    
-    # FORCED SYSTEM TERMINAL LOG
-    print(f"[WEB API LOG] -> Chart History updated for {machine_id} ({len(rows)} points)", file=sys.stdout, flush=True)
-    
-    return jsonify([
-        {
-            "vibration": r[0],
-            "current": r[1],
-            "state_model": r[2],
-            "timestamp": r[3]
-        } for r in rows
-    ])
+# ── POST: ESP32 sends sensor data here ───────────────────────────────────────
+@app.route("/predict", methods=["POST"])
+def predict():
+    data = request.get_json(force=True)
 
-# ── API: Summary Metrics (Calculated in Raw Seconds) ─────────────────────────
-@app.route("/api/summary")
-def summary():
-    machine_id = request.args.get("machine_id", "CNC-01")
-    conn = sqlite3.connect(DB)
-    rows = conn.execute(
-        "SELECT state_model FROM sensor_log WHERE machine_id=?",
-        (machine_id,)
-    ).fetchall()
-    conn.close()
+    machine_id   = data.get("machine_id", "CNC-01")
+    vibration    = float(data.get("vibration", 0))
+    current      = float(data.get("current", 0))
+    state_esp32  = data.get("state", "OFF")
 
-    states = [r[0] for r in rows]
-    total = len(states)
-    counts = {s: states.count(s) for s in set(states)}
-    seconds_dict = {k: int(v * 5) for k, v in counts.items()}
+    # ML prediction (if model loaded)
+    if model and le:
+        features    = np.array([[vibration, current]])
+        pred_label  = le.inverse_transform(model.predict(features))[0]
+        state_model = pred_label
+    else:
+        # Fallback: use ESP32 state mapped to full label
+        state_model = STATE_MAP.get(state_esp32, state_esp32)
 
-    # FORCED SYSTEM TERMINAL LOG
-    print(f"[WEB API LOG] -> Summary Totals recalculating: {seconds_dict}", file=sys.stdout, flush=True)
+    timestamp = datetime.datetime.utcnow().isoformat()
 
-    return jsonify({
-        "total_readings": total,
-        "counts": counts,
-        "seconds": seconds_dict
-    })
+    # Insert into Supabase
+    supabase.table("sensor_log").insert({
+        "machine_id":  machine_id,
+        "vibration":   vibration,
+        "current":     current,
+        "state_model": state_model,
+        "state_esp32": state_esp32,
+        "timestamp":   timestamp
+    }).execute()
 
-# ── API: Available Machines ───────────────────────────────────────────────────
-@app.route("/api/machines")
-def machines():
-    conn = sqlite3.connect(DB)
-    rows = conn.execute("SELECT DISTINCT machine_id FROM sensor_log").fetchall()
-    conn.close()
-    return jsonify([r[0] for r in rows])
+    print(f"[PREDICT] {machine_id} | {state_model} | Cur:{current:.3f} Vib:{vibration:.3f}", flush=True)
 
-# ── API: Latest Single Reading (Dashboard Cards) ──────────────────────────────
+    return jsonify({"state": state_model, "timestamp": timestamp})
+
+# ── GET: Latest reading ───────────────────────────────────────────────────────
 @app.route("/api/latest")
 def latest():
     machine_id = request.args.get("machine_id", "CNC-01")
-    conn = sqlite3.connect(DB)
-    row = conn.execute("""
-        SELECT vibration, current, state_model, timestamp 
-        FROM sensor_log WHERE machine_id=? 
-        ORDER BY id DESC LIMIT 1
-    """, (machine_id,)).fetchone()
-    conn.close()
-    
-    if not row:
-        print(f"[WEB API LOG] -> Latest data requested for {machine_id}, but database is empty!", file=sys.stdout, flush=True)
+
+    result = (
+        supabase.table("sensor_log")
+        .select("vibration, current, state_model, timestamp")
+        .eq("machine_id", machine_id)
+        .order("id", desc=True)
+        .limit(1)
+        .execute()
+    )
+
+    if not result.data:
         return jsonify({"error": "no data yet"}), 404
-        
-    # FORCED SYSTEM TERMINAL LOG
-    print(f"[WEB API LOG] -> Card Sync -> State: {row[2]} | Cur: {row[1]} A | Vib: {row[0]} m/s²", file=sys.stdout, flush=True)
-        
-    return jsonify({
-        "vibration": row[0],
-        "current": row[1],
-        "state_model": row[2],
-        "timestamp": row[3]
-    })
+
+    row = result.data[0]
+    print(f"[API/latest] {machine_id} -> {row['state_model']}", flush=True)
+    return jsonify(row)
+
+# ── GET: History for charts ───────────────────────────────────────────────────
+@app.route("/api/history")
+def history():
+    machine_id = request.args.get("machine_id", "CNC-01")
+    limit      = int(request.args.get("limit", 60))
+
+    result = (
+        supabase.table("sensor_log")
+        .select("vibration, current, state_model, timestamp")
+        .eq("machine_id", machine_id)
+        .order("id", desc=True)
+        .limit(limit)
+        .execute()
+    )
+
+    rows = list(reversed(result.data))
+    print(f"[API/history] {machine_id} -> {len(rows)} points", flush=True)
+    return jsonify(rows)
+
+# ── GET: Summary / downtime metrics ──────────────────────────────────────────
+@app.route("/api/summary")
+def summary():
+    machine_id = request.args.get("machine_id", "CNC-01")
+
+    result = (
+        supabase.table("sensor_log")
+        .select("state_model")
+        .eq("machine_id", machine_id)
+        .execute()
+    )
+
+    states = [r["state_model"] for r in result.data]
+    total  = len(states)
+    counts = {s: states.count(s) for s in set(states)}
+    seconds_dict = {k: int(v * 5) for k, v in counts.items()}
+
+    print(f"[API/summary] {machine_id} -> {seconds_dict}", flush=True)
+    return jsonify({"total_readings": total, "counts": counts, "seconds": seconds_dict})
+
+# ── GET: Machine list ─────────────────────────────────────────────────────────
+@app.route("/api/machines")
+def machines():
+    result = supabase.table("sensor_log").select("machine_id").execute()
+    ids    = list({r["machine_id"] for r in result.data})
+    return jsonify(ids)
 
 if __name__ == "__main__":
-    init_db()
-    # Setting use_reloader=False forces terminal prints to show immediately without getting cut off
     app.run(host="0.0.0.0", port=5001, debug=True, use_reloader=False)

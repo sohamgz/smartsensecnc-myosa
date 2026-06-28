@@ -25,9 +25,9 @@ Adafruit_SSD1306 display(
 // WiFi + Server
 // ======================================================
 
-const char* ssid       = "Shinde 5G EXT";
-const char* password   = "gargiiscool123";
-const char* serverURL  = "http://192.168.1.61:5001/predict";
+const char* ssid       = "YOUR_FACTORY_WIFI_SSID";
+const char* password   = "YOUR_FACTORY_WIFI_PASSWORD";
+const char* serverURL  = "https://YOUR-APP-NAME.onrender.com/predict";
 const char* MACHINE_ID = "CNC-01";
 
 // ======================================================
