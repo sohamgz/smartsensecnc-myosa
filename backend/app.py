@@ -51,7 +51,8 @@ def predict():
 
     # ML prediction (if model loaded)
     if model and le:
-        features    = np.array([[vibration, current]])
+        machine_encoded = 0
+        features = np.array([[machine_encoded, vibration, current]])   
         pred_label  = le.inverse_transform(model.predict(features))[0]
         state_model = pred_label
     else:
