@@ -239,7 +239,7 @@
                 }
 
                 if (d.timestamp) {
-                    document.getElementById("last-update").innerText = `Last: ${d.timestamp.split(" ")[1] || d.timestamp}`;
+                    document.getElementById("last-update").innerText = `Last: ${new Date(d.timestamp).toLocaleTimeString()}`;
                 }
 
                 addWebLog(stateText, curStr, vibStr);
@@ -267,7 +267,11 @@
                 const r = await fetch(`/api/history?machine_id=${machineId}&limit=30`);
                 const data = await r.json();
 
-                const labels = data.map(item => item.timestamp ? item.timestamp.split(" ")[1] : "");
+                const labels = data.map(item => {
+                    if (!item.timestamp) return "";
+                    const d = new Date(item.timestamp);
+                    return d.toLocaleTimeString();
+               });
                 const vibData = data.map(item => item.vibration);
                 const curData = data.map(item => item.current);
 
